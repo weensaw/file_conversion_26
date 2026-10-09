@@ -1,0 +1,194 @@
+@startuml file_conversion_classes
+title Классы модели сервиса конвертации файлов — вариант 26
+skinparam classAttributeIconSize 0
+
+class Simulation {
+  -sources: Source[]
+  -calendar: EventCalendar
+  -buffer: Buffer
+  -workerPool: WorkerPool
+  -admission: AdmissionDispatcher
+  -selection: SelectionDispatcher
+  -statistics: Statistics
+  +runStep(): void
+  +runUntil(limit: double): void
+}
+
+class Source {
+  -id: int
+  -intervalMin: double
+  -intervalMax: double
+  -calendar: EventCalendar
+  +generate(now: double): ConversionRequest
+  +scheduleNext(now: double): void
+  -uniformInterval(): double
+}
+
+class ConversionRequest {
+  -id: int
+  -sourceId: int
+  -createdAt: double
+  -queuedAt: double
+  -startedAt: double
+  -finishedAt: double
+  -status: RequestStatus
+  +markQueued(now: double): void
+  +markStarted(now: double): void
+  +markCompleted(now: double): void
+  +markRejected(now: double): void
+}
+
+enum RequestStatus {
+  CREATED
+  WAITING
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
+class EventCalendar {
+  -events: PriorityQueue<Event>
+  +schedule(event: Event): void
+  +next(): Event
+  +upcoming(): Event[]
+}
+
+class Event {
+  -time: double
+  -type: EventType
+  -request: ConversionRequest
+  -workerId: int
+}
+
+enum EventType {
+  REQUEST_ARRIVAL
+  SERVICE_COMPLETION
+}
+
+class Buffer {
+  -slots: ConversionRequest[]
+  +firstFreeSlot(): int
+  +newestRequestSlot(): int
+  +put(slot: int, request: ConversionRequest): void
+  +remove(slot: int): ConversionRequest
+  +firstOccupiedFrom(pointer: int): int
+}
+
+class AdmissionDispatcher {
+  -buffer: Buffer
+  -statistics: Statistics
+  +accept(request: ConversionRequest, now: double): void
+}
+
+class SelectionDispatcher {
+  -buffer: Buffer
+  -workerPool: WorkerPool
+  -calendar: EventCalendar
+  -bufferPointer: int
+  -workerPointer: int
+  +onRequestQueued(now: double): void
+  +onWorkerFreed(now: double): void
+  -assignIfPossible(now: double): void
+  -advancePointers(slot: int, workerId: int): void
+}
+
+class WorkerPool {
+  -workers: Worker[]
+  +firstFreeFrom(pointer: int): int
+  +get(workerId: int): Worker
+}
+
+class Worker {
+  -id: int
+  -currentRequest: ConversionRequest
+  -meanServiceTime: double
+  -statistics: Statistics
+  +isFree(): boolean
+  +start(request: ConversionRequest, now: double): double
+  +finish(now: double): ConversionRequest
+  -exponentialServiceTime(): double
+}
+
+class Statistics {
+  -createdCount: int
+  -completedCount: int
+  -rejectedCount: int
+  +recordCreated(request: ConversionRequest): void
+  +recordCompleted(request: ConversionRequest): void
+  +recordRejected(request: ConversionRequest): void
+  +summary(): Summary
+}
+
+class Summary {
+  +createdCount: int
+  +completedCount: int
+  +rejectedCount: int
+  +rejectionRate: double
+  +averageWaitTime: double
+}
+
+class StepView {
+  +render(simulation: Simulation): void
+}
+
+class SummaryView {
+  +render(statistics: Statistics): void
+}
+
+Simulation *-- EventCalendar
+Simulation *-- Buffer
+Simulation *-- WorkerPool
+Simulation *-- AdmissionDispatcher
+Simulation *-- SelectionDispatcher
+Simulation *-- Statistics
+Simulation o-- "1..*" Source
+Simulation o-- StepView
+Simulation o-- SummaryView
+
+Source --> EventCalendar
+Source ..> ConversionRequest : создаёт
+EventCalendar o-- "0..*" Event
+Event --> ConversionRequest
+Event --> EventType
+
+ConversionRequest --> RequestStatus
+AdmissionDispatcher --> Buffer : постановка
+AdmissionDispatcher --> Statistics : отказ
+SelectionDispatcher --> Buffer : выбор заявки
+SelectionDispatcher --> WorkerPool : выбор обработчика
+SelectionDispatcher --> EventCalendar : завершение
+Buffer o-- "0..*" ConversionRequest
+WorkerPool *-- "1..*" Worker
+Worker --> ConversionRequest : обрабатывает
+Worker --> Statistics : результат
+Statistics ..> Summary : формирует
+StepView ..> Simulation : состояние
+SummaryView ..> Statistics : итоги
+
+note right of Source
+ИБ: источник генерирует заявки без ограничения.
+ИЗ2: интервалы поступления равномерные.
+end note
+
+note right of Buffer
+Д1ОЗ3: первая свободная ячейка, без сдвига.
+Д1ОО4: при заполнении вытесняется заявка,
+которая поступила в буфер последней.
+end note
+
+note right of SelectionDispatcher
+Д2П2: свободный обработчик выбирается по кольцу.
+Д2Б3: заявка выбирается из буфера по кольцу.
+Для двух поисков используются разные указатели.
+end note
+
+note right of Worker
+ПЗ1: время обработки экспоненциальное.
+end note
+
+note bottom of SummaryView
+ОР1: сводная таблица результатов.
+ОД2: состояние модели в пошаговом режиме
+показывает StepView.
+end note
+@enduml
