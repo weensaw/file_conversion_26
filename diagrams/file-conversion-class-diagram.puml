@@ -27,6 +27,9 @@ class Source {
 class ConversionRequest {
   -id: int
   -sourceId: int
+  -fileName: String
+  -inputFormat: String
+  -outputFormat: String
   -createdAt: double
   -queuedAt: double
   -startedAt: double
