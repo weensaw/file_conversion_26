@@ -1,0 +1,90 @@
+@startuml file_conversion_sequence
+title Обработка заявок в сервисе конвертации файлов — вариант 26
+autonumber
+
+participant "Источник заявок" as Source
+participant "Календарь событий" as Calendar
+participant "Диспетчер постановки" as Admission
+database "Буфер" as Buffer
+participant "Диспетчер выбора" as Selection
+participant "Пул обработчиков" as Pool
+participant "Выбранный обработчик" as Worker
+participant "Статистика" as Stats
+
+Source -> Calendar: Запланировать поступление через интервал по ИЗ2
+Calendar --> Source: Событие запланировано
+
+... Наступило время поступления ...
+
+Calendar -> Source: Сгенерировать заявку
+Source --> Calendar: Новая заявка на конвертацию
+Source -> Calendar: Запланировать следующее поступление (ИБ, ИЗ2)
+Calendar --> Source: Событие запланировано
+
+Calendar -> Admission: Поступила новая заявка
+Admission -> Buffer: Найти первое свободное место (Д1ОЗ3)
+Buffer --> Admission: Номер ячейки или «мест нет»
+
+alt В буфере есть свободное место
+    Admission -> Buffer: Поместить новую заявку в ячейку
+    Buffer --> Admission: Заявка поставлена
+else Буфер заполнен
+    Admission -> Buffer: Найти и извлечь последнюю поступившую заявку (Д1ОО4)
+    Buffer --> Admission: Вытесненная заявка и номер её ячейки
+    Admission -> Stats: Учесть отказ вытесненной заявки
+    Stats --> Admission: Отказ учтён
+    Admission -> Buffer: Поместить новую заявку в освободившуюся ячейку
+    Buffer --> Admission: Заявка поставлена
+end
+
+Admission --> Calendar: Постановка завершена
+Calendar -> Selection: Заявка появилась в буфере
+Selection -> Pool: Найти свободный обработчик от указателя (Д2П2)
+Pool --> Selection: Обработчик или «все заняты»
+
+alt Свободный обработчик есть
+    Selection -> Buffer: Найти занятую ячейку от указателя (Д2Б3)
+    Buffer --> Selection: Номер ячейки и выбранная заявка
+    Selection -> Buffer: Извлечь выбранную заявку
+    Buffer --> Selection: Заявка извлечена
+    Selection -> Selection: Сдвинуть указатели буфера и обработчиков
+    Selection -> Worker: Начать конвертацию выбранной заявки
+    Worker --> Selection: Время окончания обслуживания по ПЗ1
+    Selection -> Calendar: Запланировать окончание обслуживания
+    Calendar --> Selection: Событие запланировано
+else Все обработчики заняты
+    Selection --> Calendar: Заявка продолжает ожидать в буфере
+end
+
+... Позже один обработчик заканчивает работу ...
+
+Calendar -> Worker: Событие окончания обслуживания
+Worker --> Calendar: Обработанная заявка; обработчик свободен
+Calendar -> Stats: Учесть успешное обслуживание
+Stats --> Calendar: Результат учтён
+
+Calendar -> Selection: Обработчик освободился
+Selection -> Buffer: Найти занятую ячейку от указателя (Д2Б3)
+Buffer --> Selection: Заявка и ячейка или «буфер пуст»
+
+alt В буфере есть ожидающая заявка
+    Selection -> Pool: Найти свободный обработчик от указателя (Д2П2)
+    Pool --> Selection: Номер обработчика
+    Selection -> Buffer: Извлечь выбранную заявку
+    Buffer --> Selection: Заявка извлечена
+    Selection -> Selection: Сдвинуть оба указателя
+    Selection -> Worker: Начать обслуживание заявки
+    Worker --> Selection: Время окончания по ПЗ1
+    Selection -> Calendar: Запланировать окончание обслуживания
+    Calendar --> Selection: Событие запланировано
+else Буфер пуст
+    Selection --> Calendar: Обработчик остаётся свободным
+end
+
+note over Admission,Worker
+Отказ происходит в полном буфере:
+вытесняется последняя поступившая туда заявка.
+Занятый обработчик сам заявку не отклоняет.
+end note
+
+@enduml
