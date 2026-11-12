@@ -1,90 +1,212 @@
 @startuml file_conversion_sequence
-title Обработка заявок в сервисе конвертации файлов — вариант 26
+title Сервис конвертации файлов — последовательность событий, вариант 26
 autonumber
+hide footbox
 
-participant "Источник заявок" as Source
-participant "Календарь событий" as Calendar
-participant "Диспетчер постановки" as Admission
-database "Буфер" as Buffer
-participant "Диспетчер выбора" as Selection
-participant "Пул обработчиков" as Pool
-participant "Выбранный обработчик" as Worker
-participant "Статистика" as Stats
+participant "Simulation" as Sim
+participant "EventCalendar" as Calendar
+participant "Source" as Source
+participant "AdmissionDispatcher" as Admission
+participant "Buffer" as Buffer
+participant "SelectionDispatcher" as Selection
+participant "Worker" as Worker
+participant "Statistics" as Stats
 
-Source -> Calendar: Запланировать поступление через интервал по ИЗ2
-Calendar --> Source: Событие запланировано
+== Инициализация ==
 
-... Наступило время поступления ...
+Sim -> Sim: initialize()
 
-Calendar -> Source: Сгенерировать заявку
-Source --> Calendar: Новая заявка на конвертацию
-Source -> Calendar: Запланировать следующее поступление (ИБ, ИЗ2)
-Calendar --> Source: Событие запланировано
-
-Calendar -> Admission: Поступила новая заявка
-Admission -> Buffer: Найти первое свободное место (Д1ОЗ3)
-Buffer --> Admission: Номер ячейки или «мест нет»
-
-alt В буфере есть свободное место
-    Admission -> Buffer: Поместить новую заявку в ячейку
-    Buffer --> Admission: Заявка поставлена
-else Буфер заполнен
-    Admission -> Buffer: Найти и извлечь последнюю поступившую заявку (Д1ОО4)
-    Buffer --> Admission: Вытесненная заявка и номер её ячейки
-    Admission -> Stats: Учесть отказ вытесненной заявки
-    Stats --> Admission: Отказ учтён
-    Admission -> Buffer: Поместить новую заявку в освободившуюся ячейку
-    Buffer --> Admission: Заявка поставлена
+loop Для каждого источника
+    Sim -> Source: next_arrival(0, rng)
+    Source --> Sim: Время первого поступления
+    Sim -> Calendar: schedule(time, ARRIVAL, source_id)
+    Calendar --> Sim: Событие добавлено
 end
 
-Admission --> Calendar: Постановка завершена
-Calendar -> Selection: Заявка появилась в буфере
-Selection -> Pool: Найти свободный обработчик от указателя (Д2П2)
-Pool --> Selection: Обработчик или «все заняты»
+note over Source
+ИБ: генерация не зависит от завершения
+предыдущих заявок.
+ИЗ2: интервал до следующего поступления
+имеет равномерное распределение.
+end note
 
-alt Свободный обработчик есть
-    Selection -> Buffer: Найти занятую ячейку от указателя (Д2Б3)
-    Buffer --> Selection: Номер ячейки и выбранная заявка
-    Selection -> Buffer: Извлечь выбранную заявку
-    Buffer --> Selection: Заявка извлечена
-    Selection -> Selection: Сдвинуть указатели буфера и обработчиков
-    Selection -> Worker: Начать конвертацию выбранной заявки
-    Worker --> Selection: Время окончания обслуживания по ПЗ1
-    Selection -> Calendar: Запланировать окончание обслуживания
-    Calendar --> Selection: Событие запланировано
-else Все обработчики заняты
-    Selection --> Calendar: Заявка продолжает ожидать в буфере
+== Обработка событий ==
+
+loop Пока есть генерация или незавершённые заявки
+    Sim -> Calendar: pop_next()
+    Calendar --> Sim: Ближайшее событие
+    Sim -> Sim: now = event.time
+
+    alt Поступление заявки — ARRIVAL
+        Sim -> Source: generate(now)
+        Source --> Sim: Новая заявка request
+
+        Sim -> Stats: record_generated(request)
+        Stats --> Sim: Поступление учтено
+
+        Sim -> Sim: Увеличить generated_total
+
+        alt Лимит генерации ещё не достигнут
+            Sim -> Source: next_arrival(now, rng)
+            Source --> Sim: Время следующего поступления
+            Sim -> Calendar: schedule(time, ARRIVAL, source_id)
+            Calendar --> Sim: Событие добавлено
+        else Сгенерирована последняя заявка
+            Sim -> Sim: close_generation()
+            Sim -> Calendar: cancel_arrivals()
+            Calendar --> Sim: Будущие поступления отменены
+            note right of Sim
+            События завершения обслуживания
+            остаются в календаре.
+            Последняя созданная заявка
+            также проходит постановку в буфер.
+            end note
+        end
+
+        Sim -> Admission: accept(request, now)
+        Admission -> Buffer: first_free_slot()
+        Buffer --> Admission: Номер ячейки или None
+
+        alt Есть свободная ячейка
+            note over Admission,Buffer
+            Д1ОЗ3: первая свободная ячейка
+            от начала массива, без сдвига остальных.
+            end note
+        else Буфер заполнен
+            Admission -> Buffer: newest_request_slot()
+            Buffer --> Admission: Ячейка последней поступившей заявки
+
+            Admission -> Buffer: remove(slot)
+            Buffer --> Admission: Вытесненная заявка victim
+
+            Admission -> Admission: victim.reject(now)
+            Admission -> Stats: record_rejected(victim)
+            Stats --> Admission: Отказ учтён
+
+            note over Admission,Buffer
+            Д1ОО4: вытесняется заявка,
+            последней поступившая в буфер.
+            Новая занимает освободившуюся ячейку.
+            end note
+        end
+
+        Admission -> Buffer: put(slot, request)
+        Buffer --> Admission: Новая заявка помещена в буфер
+        Admission --> Sim: Список выполненных действий
+
+    else Завершение обслуживания — COMPLETION
+        Sim -> Worker: finish(now)
+        Worker --> Sim: Обработанная заявка; прибор свободен
+
+        Sim -> Stats: record_completed(request)
+        Stats --> Sim: Временные показатели учтены
+    end
+
+    == Назначение ожидающих заявок ==
+
+    note over Sim,Selection
+    Триггеры выбора:
+    поступление заявки в буфер
+    или освобождение прибора.
+    end note
+
+    Sim -> Selection: assign_available(now, rng)
+    Selection -> Buffer: is_empty()
+    Buffer --> Selection: Пуст / не пуст
+
+    alt Буфер пуст
+        note right of Selection
+        Назначение не выполняется.
+        Свободные приборы простаивают.
+        end note
+
+    else В буфере есть заявки
+        Selection -> Selection: find_free_worker()
+        note right of Selection
+        Д2П2: обход списка приборов по кольцу
+        от worker_pointer.
+        Свободное состояние определяется
+        через Worker.is_free().
+        end note
+
+        alt Все приборы заняты
+            note over Selection,Worker
+            Заявки продолжают ждать в буфере.
+            Занятость прибора не является отказом.
+            Следующее событие обрабатывает Simulation.
+            end note
+
+        else Найден свободный прибор
+            loop Пока есть ожидающая заявка и свободный прибор
+                Selection -> Buffer: first_occupied_from(buffer_pointer)
+                Buffer --> Selection: Номер занятой ячейки
+
+                note over Buffer,Selection
+                Д2Б3: выбор занятой ячейки по кольцу.
+                Указатель буфера независим
+                от указателя приборов.
+                end note
+
+                Selection -> Buffer: remove(slot)
+                Buffer --> Selection: Выбранная заявка request
+
+                Selection -> Selection: Получить duration по ПЗ1
+                note right of Selection
+                ПЗ1: экспоненциальное
+                время обслуживания.
+                end note
+
+                Selection -> Worker: start(request, now, duration)
+                Worker --> Selection: Заявка принята; прибор занят
+
+                Selection -> Calendar: schedule(now + duration,\nCOMPLETION, worker_id)
+                Calendar --> Selection: Завершение запланировано
+
+                Selection -> Selection: buffer_pointer = (slot + 1) mod capacity
+                Selection -> Selection: worker_pointer = (worker_id + 1) mod worker_count
+
+                note right of Selection
+                Внутренние индексы начинаются с 0.
+                Повторно проверить буфер
+                и найти свободный прибор.
+                end note
+            end
+        end
+    end
+
+    Selection --> Sim: Список выполненных назначений
+
+    opt Пошаговый режим
+        Sim -> Sim: snapshot()
+        note right of Sim
+        Application передаёт состояние в StepView:
+        источники, буфер, приборы,
+        указатели и действия текущего шага.
+        Календарь и графики не отображаются.
+        end note
+    end
 end
 
-... Позже один обработчик заканчивает работу ...
+== Завершение реализации ==
 
-Calendar -> Worker: Событие окончания обслуживания
-Worker --> Calendar: Обработанная заявка; обработчик свободен
-Calendar -> Stats: Учесть успешное обслуживание
-Stats --> Calendar: Результат учтён
+note over Sim,Worker
+Генерация закрыта, буфер пуст,
+все приборы свободны.
+Ожидающие заявки дообслужены.
+end note
 
-Calendar -> Selection: Обработчик освободился
-Selection -> Buffer: Найти занятую ячейку от указателя (Д2Б3)
-Buffer --> Selection: Заявка и ячейка или «буфер пуст»
+Sim -> Stats: source_table()
+Stats --> Sim: Таблица показателей каждого источника
 
-alt В буфере есть ожидающая заявка
-    Selection -> Pool: Найти свободный обработчик от указателя (Д2П2)
-    Pool --> Selection: Номер обработчика
-    Selection -> Buffer: Извлечь выбранную заявку
-    Buffer --> Selection: Заявка извлечена
-    Selection -> Selection: Сдвинуть оба указателя
-    Selection -> Worker: Начать обслуживание заявки
-    Worker --> Selection: Время окончания по ПЗ1
-    Selection -> Calendar: Запланировать окончание обслуживания
-    Calendar --> Selection: Событие запланировано
-else Буфер пуст
-    Selection --> Calendar: Обработчик остаётся свободным
-end
+Sim -> Stats: worker_table(workers, now)
+Stats --> Sim: Таблица загрузки каждого прибора
 
-note over Admission,Worker
-Отказ происходит в полном буфере:
-вытесняется последняя поступившая туда заявка.
-Занятый обработчик сам заявку не отклоняет.
+note right of Sim
+В автоматическом режиме AutomaticRunner
+при необходимости повторяет реализацию
+для подбора числа заявок.
+После расчёта SummaryView показывает
+две итоговые таблицы.
 end note
 
 @enduml

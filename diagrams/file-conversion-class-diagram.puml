@@ -1,197 +1,277 @@
 @startuml file_conversion_classes
-title Классы модели сервиса конвертации файлов — вариант 26
-skinparam classAttributeIconSize 0
+title Сервис конвертации файлов — классы модели, вариант 26
 
-class Simulation {
-  -sources: Source[]
-  -calendar: EventCalendar
-  -buffer: Buffer
-  -workerPool: WorkerPool
-  -admission: AdmissionDispatcher
-  -selection: SelectionDispatcher
-  -statistics: Statistics
-  +runStep(): void
-  +runUntil(limit: double): void
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+top to bottom direction
+
+class SimulationConfig {
+  +source_count: int
+  +worker_count: int
+  +buffer_capacity: int
+  +arrival_min: float
+  +arrival_max: float
+  +service_mean: float
+  +request_limit: int
+  +seed: int
+  +validate(): void
+}
+
+class ConversionRequest {
+  -source_id: int
+  -sequence_number: int
+  -file_name: str
+  -input_format: str
+  -output_format: str
+  -created_at: float
+  -started_at: float?
+  -finished_at: float?
+  -status: str
+  +start(now: float): void
+  +complete(now: float): void
+  +reject(now: float): void
+  +snapshot(): dict
+  +mark_waiting(): void
 }
 
 class Source {
   -id: int
-  -intervalMin: double
-  -intervalMax: double
-  -calendar: EventCalendar
-  +generate(now: double): ConversionRequest
-  +scheduleNext(now: double): void
-  -uniformInterval(): double
+  -generated_count: int
+  -arrival_min: float
+  -arrival_max: float
+  +next_arrival(now: float, rng: Random): float
+  +generate(now: float): ConversionRequest
+  +snapshot(): dict
 }
 
-class ConversionRequest {
-  -id: int
-  -sourceId: int
-  -fileName: String
-  -inputFormat: String
-  -outputFormat: String
-  -createdAt: double
-  -queuedAt: double
-  -startedAt: double
-  -finishedAt: double
-  -status: RequestStatus
-  +markQueued(now: double): void
-  +markStarted(now: double): void
-  +markCompleted(now: double): void
-  +markRejected(now: double): void
+class Event {
+  +time: float
+  +order: int
+  +kind: EventType
+  +target_id: int
 }
 
-enum RequestStatus {
-  CREATED
-  WAITING
-  PROCESSING
-  COMPLETED
-  REJECTED
+enum EventType {
+  ARRIVAL
+  COMPLETION
 }
 
 class EventCalendar {
   -events: PriorityQueue<Event>
-  +schedule(event: Event): void
-  +next(): Event
-  +upcoming(): Event[]
-}
-
-class Event {
-  -time: double
-  -type: EventType
-  -request: ConversionRequest
-  -workerId: int
-}
-
-enum EventType {
-  REQUEST_ARRIVAL
-  SERVICE_COMPLETION
+  -next_order: int
+  +schedule(time: float, kind: EventType, target_id: int): void
+  +pop_next(): Event
+  +cancel_arrivals(): void
+  +is_empty(): bool
 }
 
 class Buffer {
-  -slots: ConversionRequest[]
-  +firstFreeSlot(): int
-  +newestRequestSlot(): int
+  -slots: list
+  -placement_order: list<int>
+  -next_placement_order: int
+  +first_free_slot(): int?
+  +newest_request_slot(): int?
+  +first_occupied_from(pointer: int): int?
   +put(slot: int, request: ConversionRequest): void
   +remove(slot: int): ConversionRequest
-  +firstOccupiedFrom(pointer: int): int
+  +is_empty(): bool
+  +capacity(): int
+  +snapshot(): list
+}
+
+class Worker {
+  -id: int
+  -current_request: ConversionRequest?
+  -finish_at: float?
+  -busy_time: float
+  +is_free(): bool
+  +start(request: ConversionRequest, now: float, duration: float): void
+  +finish(now: float): ConversionRequest
+  +snapshot(): dict
+  -completed_count: int
 }
 
 class AdmissionDispatcher {
   -buffer: Buffer
   -statistics: Statistics
-  +accept(request: ConversionRequest, now: double): void
+  +accept(request: ConversionRequest, now: float): list
 }
 
 class SelectionDispatcher {
   -buffer: Buffer
-  -workerPool: WorkerPool
+  -workers: list<Worker>
   -calendar: EventCalendar
-  -bufferPointer: int
-  -workerPointer: int
-  +onRequestQueued(now: double): void
-  +onWorkerFreed(now: double): void
-  -assignIfPossible(now: double): void
-  -advancePointers(slot: int, workerId: int): void
-}
-
-class WorkerPool {
-  -workers: Worker[]
-  +firstFreeFrom(pointer: int): int
-  +get(workerId: int): Worker
-}
-
-class Worker {
-  -id: int
-  -currentRequest: ConversionRequest
-  -meanServiceTime: double
-  -statistics: Statistics
-  +isFree(): boolean
-  +start(request: ConversionRequest, now: double): double
-  +finish(now: double): ConversionRequest
-  -exponentialServiceTime(): double
+  -service_mean: float
+  -buffer_pointer: int
+  -worker_pointer: int
+  +assign_available(now: float, rng: Random): list
+  +pointers(): dict
+  -find_free_worker(): int?
 }
 
 class Statistics {
-  -createdCount: int
-  -completedCount: int
-  -rejectedCount: int
-  +recordCreated(request: ConversionRequest): void
-  +recordCompleted(request: ConversionRequest): void
-  +recordRejected(request: ConversionRequest): void
-  +summary(): Summary
+  -source_totals: dict
+  -waiting_times: dict
+  -service_times: dict
+  -system_times: dict
+  +record_generated(request: ConversionRequest): void
+  +record_rejected(request: ConversionRequest): void
+  +record_completed(request: ConversionRequest): void
+  +source_table(): list
+  +worker_table(workers: list<Worker>, end_time: float): list
+  +rejection_probability(): float
 }
 
-class Summary {
-  +createdCount: int
-  +completedCount: int
-  +rejectedCount: int
-  +rejectionRate: double
-  +averageWaitTime: double
+class Simulation {
+  -config: SimulationConfig
+  -rng: Random
+  -now: float
+  -generated_total: int
+  -generation_closed: bool
+  -sources: list<Source>
+  -workers: list<Worker>
+  -calendar: EventCalendar
+  -buffer: Buffer
+  -admission: AdmissionDispatcher
+  -selection: SelectionDispatcher
+  -statistics: Statistics
+  -last_actions: list
+  +initialize(): void
+  +step(): bool
+  +run(): void
+  +is_finished(): bool
+  +snapshot(): dict
+  +results(): dict
+  -handle_arrival(event: Event): void
+  -handle_completion(event: Event): void
+  -close_generation(): void
+  -step_number: int
+}
+
+class AutomaticRunner {
+  -base_config: SimulationConfig
+  -relative_error: float
+  -confidence: float
+  -max_requests: int
+  -max_iterations: int
+  +run(): dict
+  -estimate_required_count(p: float): int
+  -z: float
 }
 
 class StepView {
-  +render(simulation: Simulation): void
+  +render(state: dict): void
 }
 
 class SummaryView {
-  +render(statistics: Statistics): void
+  +render(results: dict): void
 }
 
+class Application {
+  -config: SimulationConfig
+  -step_view: StepView
+  -summary_view: SummaryView
+  +run_step_mode(): void
+  +run_auto_mode(max_requests: int, max_iterations: int): void
+}
+
+Simulation --> SimulationConfig
+Simulation *-- "1..*" Source
+Simulation *-- "1..*" Worker
 Simulation *-- EventCalendar
 Simulation *-- Buffer
-Simulation *-- WorkerPool
 Simulation *-- AdmissionDispatcher
 Simulation *-- SelectionDispatcher
 Simulation *-- Statistics
-Simulation o-- "1..*" Source
-Simulation o-- StepView
-Simulation o-- SummaryView
 
-Source --> EventCalendar
 Source ..> ConversionRequest : создаёт
-EventCalendar o-- "0..*" Event
-Event --> ConversionRequest
+EventCalendar *-- "0..*" Event
 Event --> EventType
 
-ConversionRequest --> RequestStatus
-AdmissionDispatcher --> Buffer : постановка
-AdmissionDispatcher --> Statistics : отказ
-SelectionDispatcher --> Buffer : выбор заявки
-SelectionDispatcher --> WorkerPool : выбор обработчика
-SelectionDispatcher --> EventCalendar : завершение
-Buffer o-- "0..*" ConversionRequest
-WorkerPool *-- "1..*" Worker
-Worker --> ConversionRequest : обрабатывает
-Worker --> Statistics : результат
-Statistics ..> Summary : формирует
-StepView ..> Simulation : состояние
-SummaryView ..> Statistics : итоги
+AdmissionDispatcher --> Buffer
+AdmissionDispatcher --> Statistics
+AdmissionDispatcher ..> ConversionRequest
+
+SelectionDispatcher --> Buffer
+SelectionDispatcher --> Worker
+SelectionDispatcher --> EventCalendar
+
+Buffer o-- "0..*" ConversionRequest : ожидание
+Worker --> "0..1" ConversionRequest : обслуживание
+Statistics ..> ConversionRequest : учитывает результат
+Statistics ..> Worker : получает время занятости
+
+AutomaticRunner --> SimulationConfig
+AutomaticRunner ..> Simulation : повторные запуски
+
+Application --> SimulationConfig
+Application --> StepView
+Application --> SummaryView
+Application ..> Simulation
+Application ..> AutomaticRunner
 
 note right of Source
-ИБ: источник генерирует заявки без ограничения.
-ИЗ2: интервалы поступления равномерные.
+ИБ: генерация не зависит от завершения
+ранее отправленных заявок.
+ИЗ2: равномерные интервалы поступления.
+Номер заявки: источник + порядковый номер.
 end note
 
 note right of Buffer
-Д1ОЗ3: первая свободная ячейка, без сдвига.
-Д1ОО4: при заполнении вытесняется заявка,
-которая поступила в буфер последней.
+Д1ОЗ3: первая свободная ячейка.
+Заявки между ячейками не сдвигаются.
+Д1ОО4: вытесняется последняя
+поступившая в заполненный буфер заявка.
 end note
 
 note right of SelectionDispatcher
-Д2П2: свободный обработчик выбирается по кольцу.
-Д2Б3: заявка выбирается из буфера по кольцу.
-Для двух поисков используются разные указатели.
+Д2П2: выбор свободного прибора по кольцу.
+Д2Б3: выбор занятой ячейки по кольцу.
+Указатели независимы.
+После назначения каждый переходит
+на позицию после выбранной.
+ПЗ1: экспоненциальное время обслуживания.
 end note
 
-note right of Worker
-ПЗ1: время обработки экспоненциальное.
+note bottom of Simulation
+Управляет модельным временем и обработкой событий.
+После достижения лимита новых заявок
+прекращает генерацию, но продолжает обслуживание.
+Завершение: буфер пуст и все приборы свободны.
+Календарь событий используется только внутри модели.
+end note
+
+note bottom of Statistics
+Таблица источников:
+число заявок, число отказов, вероятность отказа,
+среднее время в системе, ожидания и обслуживания,
+дисперсии ожидания и обслуживания.
+Временные показатели рассчитываются
+по обслуженным заявкам каждого источника.
+
+Таблица приборов:
+время занятости и коэффициент использования.
+end note
+
+note right of AutomaticRunner
+Автоматический подбор числа заявок:
+относительная точность 10%,
+доверительная вероятность 0.9.
+При нулевой оценке отказов выборка увеличивается.
+Достижение ограничения расчёта
+не считается достижением точности.
+end note
+
+note bottom of StepView
+На каждом шаге:
+источники, ячейки буфера, приборы,
+положения двух указателей и выполненные действия.
+Без вывода календаря событий и графиков.
 end note
 
 note bottom of SummaryView
-ОР1: сводная таблица результатов.
-ОД2: состояние модели в пошаговом режиме
-показывает StepView.
+ОР1: две итоговые таблицы —
+источники и приборы.
 end note
+
 @enduml
